@@ -10,17 +10,17 @@ class HistoryList:
         self.history_values = history_values if history_values is not None else {
             'mbk': [], 'cb': [], 'deposit': [], 'credit': []}
 
-    def append(self, item: object) -> object:
+    def append(self, item):
         self.values.append(item)
-        self.history_values[item.flow_type].append(item.amount)
+        self.history_values[item.flow_type].append(item.volume)
 
     def extend(self, other):
         for item in other:
             self.values.append(item)
-            self.history_values[item.flow_type].append(item.amount)
+            self.history_values[item.flow_type].append(item.volume)
 
     def update_history_removed(self, item):
-        self.history_values[item.flow_type].append(-item.amount)
+        self.history_values[item.flow_type].append(-item.volume)
 
     def update_history(self):
         for key in self.history_values.keys():
@@ -50,18 +50,19 @@ class HistoryList:
 
 
 class Flow:
-    def __init__(self, flow_type, amount=None):
+    def __init__(self, flow_type, volume=None):
         self.flow_type = flow_type
-        self.amount = amount
+        self.volume = volume
 
         # Депозит или Кредит
-        if (flow_type == 'deposit' or 'credit') and amount is None:
+        if (flow_type == 'deposit' or 'credit') and volume is None:
             self.rate = settings['cb_rate']
             self.volume = round(np.random.uniform(settings[f'{flow_type}_volume_bound'][0],
                                                 settings[f'{flow_type}_volume_bound'][1]))
             self.maturity = random.choice(
                 settings[f'{flow_type}_maturity'])
-            self.days_to_pay = settings['payment_period']
+            self.payment_period = random.choice(settings['payment_period'])
+            self.days_to_pay = self.payment_period
 
         else:
             raise ValueError(f'Unimplemented type of {flow_type} was given')
@@ -69,15 +70,18 @@ class Flow:
     def update_rate(self, delta):
         """
         Функция, которая назначает ставку потоку в зависимости от того,
-        в какой банк попал данный поток
+        в какой банк попал данный поток для розничных кредитов и депозитов.
+        На рынке МБК и в транзакциях с ЦБ действует ключевая ставка
         """
         if self.flow_type == 'deposit':
-            self.rate = settings['cb_rate'] - delta
-        else:
-            self.rate = settings['cb_rate'] + delta
+            self.rate -= delta
+        elif self.flow_type == 'credit':
+            self.rate += delta
+
 
     def _string_representation(self):
-        return f'{self.flow_type.title()} (тип: {self.flow_type}) сроком погашения {self.maturity} дней, размером {self.volume} рублей, по ставке {self.rate * 100}%, с периодом выплат {self.days_to_pay} дней'
+        return f'{self.flow_type.title()} размером {self.volume} рублей, {round(self.rate * 100)}%'
+       # return f'{self.flow_type.title()} (тип: {self.flow_type}) сроком погашения {self.maturity} дней, размером {self.volume} рублей, по ставке {self.rate * 100}%, с периодом выплат {self.payment_period} дней'
 
     def __repr__(self):
         return self._string_representation()
@@ -89,7 +93,7 @@ class Flow:
 class Bank:
     def __init__(self, name):
         self.name = name
-        self.assets = 0
+        self.cash = 0
 
         self.deposits = HistoryList()
         self.credits = HistoryList()
@@ -99,16 +103,41 @@ class Bank:
 
         self.cash_history = []
 
+    def set_reliability(self):
+        self.reliability = self.cash / 2e6
 
-    def set_assets(self, amount):
-        self.assets = amount
+    def set_delta(self):
+        if self.reliability >= 1:
+            self.delta = 0.03
+        elif self.reliability > 0.75:
+            self.delta = 0.02
+        elif self.reliability > 0.6:
+            self.delta = 0.01
+        else:
+            self.delta = 0
 
     def validate(self):
-        # Посчитать текущие обязательства по депозитам
-        #self.deposits_to_return = sum(deposit.amount for deposit in self.deposit_apps)
+        # 1. Принять все депозиты, назначить им ставки
+        for deposit in range(len(self.deposit_apps)):
+            self.deposit_apps[deposit].update_rate(self.delta)
+            self.deposits.append(self.deposit_apps[deposit])
 
-        # Понять, сколько сегодня нужно выплатить процентов по депозитам в Market - просуммировать и записать
-        deposits_coupon_to_return = sum(deposit.rate * deposit.amount for deposit in self.deposit_apps if not deposit.days_to_pay)
+        for credit in self.credit_apps:
+            credit.update_rate(self.delta)
+            if self.cash >= credit.volume:
+                self.credits.append(credit)
+            else:
+                pass
+
+        # 2. Посчитать текущие обязательства
+
+        # Кредиты, которые выдаст по заявкам
+        credits_to_give = sum(
+            credit.volume for credit in self.credits)
+
+        # Проценты по депозитам, которые нужно выплатить сегодня
+        deposit_coupon_to_return = sum(
+           deposit.volume * deposit.rate/(360/deposit.payment_period) for deposit in self.deposits if deposit.days_to_pay == 0)
 
         # Разделить депозиты на те, что возвращаем сегодня и на те, что пока что остаются
         self.deposits_to_return = []
@@ -116,49 +145,92 @@ class Bank:
 
         for deposit in self.deposits:
             # Если депозит истекает сегодня
-            if not deposit.maturity:
+            if deposit.maturity == 0:
                 self.deposits_to_return.append(deposit)
                 self.deposits.update_history_removed(deposit)
             # Если депозит не истекает сегодня
             else:
                 # Уменьшаем срок до истечения на 1.
                 deposit.maturity -= 1
-                # Уменьшаем количество дней до следующегей выплаты, а если сейчас ноль, то ставим новый период
-                deposit.days_to_pay = self.settings['payment_period'] if not deposit.days_to_pay else deposit.days_to_pay - 1
+                # Уменьшаем количество дней до следующей выплаты, а если сейчас ноль, то ставим новый период
+                deposit.days_to_pay = deposit.payment_period if deposit.days_to_pay == 0 else deposit.days_to_pay - 1
                 deposits_to_stay.append(deposit)
 
-            self.deposits = HistoryList(
+
+        self.deposits = HistoryList(
                 values=deposits_to_stay, histories=self.deposits.histories, history_values=self.deposits.history_values)
 
-            # Сумма депозитов, которые банк должен выплатить сегодня
-            deposits_amount_to_return = sum(deposit.amount +
-                                            (deposit.amount * deposit.rate * (
-                                                    (self.settings['payment_period'] - deposit.days_to_pay) /
-                                                    self.settings['payment_period']))
-                                            for deposit in self.deposits_to_return)
+        deposits_volume_to_return = sum(deposit.volume for deposit in self.deposits_to_return)
 
-            # Сумма всех обязательств банка на сегодня
-            self.current_obligations = deposits_coupon_to_return + deposits_amount_to_return
+        # Сумма всех обязательств банка на сегодня
+        self.current_obligations = deposits_volume_to_return + credits_to_give + deposit_coupon_to_return
 
-        # Понять, сколько еще предстоит выплатить (обновить список обязательств)
-        # Посчитать текушие активы по кредитам
-        self.credits_to_receive = sum(credit.amount for credit in self.credit_list)
 
-        # Понять, сколько процентов по кредитам должны вернуть сегодня - просуммировать и записать
-        # Понять, сколько еще предстоит получить (обновить список обязательств)
+        # 3. Посчитать текущие притоки
+        # Депозиты, которые поступят на счет банка
+        deposits_to_get = sum(deposit.volume for deposit in self.deposits)
+
+        # Проценты по кредитам, которые должны прийти сегодня
+        credit_coupon_to_get = sum(
+           credit.volume * credit.rate/(360/credit.payment_period) for credit in self.credits if credit.days_to_pay == 0)
+
+        # Разделяем кредиты на те, которые нам будут возвращать сегодня и те, которые останутся
+        self.credits_to_get = []
+        credits_to_stay = []
+        for credit in self.credits:
+            # Если истекает сегодня
+            if credit.maturity == 0:
+                self.credits_to_get.append(credit)
+                self.credits.update_history_removed(credit)
+            # Если кредит не истекает сегодня
+            else:
+                credit.maturity -= 1
+                credit.days_to_pay = credit.payment_period if credit.days_to_pay == 0 else credit.days_to_pay - 1
+                credits_to_stay.append(credit)
+
+        self.credits = HistoryList(
+            values=credits_to_stay, histories=self.credits.histories, history_values=self.credits.history_values)
+
+        # Сумма кредитов, которые банку вернут сегодня
+        credits_volume_to_get = sum(credit.volume for credit in self.credits_to_get)
+
+        # Сумма всех притоков денег банку за день
+        self.current_inflows = credits_volume_to_get + credit_coupon_to_get + deposits_to_get
 
 
     def solve(self):
-        # Вычесть из активов выплаты по депозитам
-        # Прибавить поступления из кредитов
-        pass
+        self.cash += self.current_inflows
+        self.cash -= self.current_obligations
+        self.cash_history.append(self.cash)
+        if self.cash >= 0:
+            self.solved = True
+        else:
+            self.solved = False
 
-    def get_assets(self):
-        print(f"Net Assets of bank '{self.name}' = {self.assets}")
 
-    def take_deposit(self, deposit):
-        self.assets += deposit
+    def restart(self):
+        # Обновим историю в кредитах и депозитах
+        self.deposits.update_history()
+        self.credits.update_history()
 
+        # Обнуляем состояния переменных
+        self.deposit_apps = []
+        self.credit_apps = []
+
+        #assert self.solved, 'Bank must be solved at the end of day'
+
+        self.current_obligations = 0
+        self.current_inflows = 0
+
+        #assert self.loan_amount == 0, f'Loan amount must be zero during clearing. Current loan amount is {self.loan_amount}'
+
+        self.deposits_to_return = []
+        self.credits_to_get = []
+
+
+
+    def get_cash(self):
+        print(f"Net Assets of bank '{self.name}' = {self.cash}")
 
     def _string_representation(self):
         return self.name

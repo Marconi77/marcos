@@ -1,6 +1,6 @@
 from settings import settings
 import numpy as np
-from agents import HistoryList, Flow
+from agents import HistoryList, Flow, Bank
 
 
 liquid_distr = [0.45, 0.14, 0.08, 0.06, 0.05, 0.03, 0.02, 0.02, 0.02, 0.02, 0.02, 0.01, 0.01, 0.01, 0.01, 0.01, 0.01, 0.01, 0.01, 0.01]
@@ -57,3 +57,30 @@ print(test_flow2.__dict__)
 
 deposit_list.append(test_flow1)
 print(deposit_list.history_values)
+print('---------------------------------------------------------------------------------')
+pv = Flow('deposit')
+print(pv.__dict__)
+
+deposits_amount_to_return = sum(deposit.volume * (1 + deposit.rate /
+                                                             (360/deposit.payment_period)) **
+                                                             (deposit.maturity / deposit.payment_period)
+                                            for deposit in self.deposits_to_return)
+
+credits_amount_to_get = sum(credit.volume * (1 + credit.rate /
+                                                    (360/credit.payment_period)) **
+                                                    (credit.maturity / credit.payment_period)
+                                            for credit in self.credits_to_get)
+
+fv = pv.volume * (1 + pv.rate / (360/pv.payment_period)) ** (pv.maturity / pv.payment_period)
+print(fv)
+print('---------------------------------------------------------------------------------')
+# Проверка работы дельты
+test_bank = Bank('test_bank')
+test_bank.cash = 3000000
+test_bank.set_reliability()
+test_bank.set_delta()
+deposit = Flow('deposit')
+deposit.volume = 100000
+test_bank.deposit_apps.append(deposit)
+test_bank.deposit_apps[0].update_rate(test_bank.delta)
+print(test_bank.deposit_apps)

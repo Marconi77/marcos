@@ -4,18 +4,20 @@ import numpy as np
 from agents import Bank, Flow, HistoryList
 
 # 1 - создание 20 банков
+
 banks_list = [Bank(f'Bank_{i}') for i in range(1, 21)]
-print(banks_list)
 
 # 2 - создание ликвидности у банков согласно распределению 'real'
-banks = dict(zip(banks_list, np.array(settings["liquid_distribution"]) * 10e6))
+for bank in range(len(banks_list)):
+    banks_list[bank].cash = np.array(settings["liquid_distribution"])[bank] * 10e6
+    banks_list[bank].cash_history.append(banks_list[bank].cash)
+    banks_list[bank].set_reliability()
+    banks_list[bank].set_delta()
 
-print(banks)
-
-
-def run(n_steps):
+def run(n_steps, day=0):
     system_deposits = []
     system_credits = []
+    day += 1
     for _ in range(n_steps):
         # 4 - генерация Потоков
         deposit_supply = []
@@ -38,18 +40,31 @@ def run(n_steps):
         for _ in range(len(deposit_supply)):
             selected_bank = np.random.choice(range(20))  # выбираем рандомный банк
             banks_list[selected_bank].deposit_apps.append(
-                                      random.choice(deposit_supply))  # отправляем ему заявку на депозит
+                random.choice(deposit_supply))  # отправляем ему заявку на депозит
 
         for _ in range(len(credit_supply)):
             selected_bank = np.random.choice(range(20))  # выбираем рандомный банк
-            banks_list[selected_bank].credit_apps.append(random.choice(credit_supply))
-    # 6 - Выдача поступивших запросов на кредиты банками
-    # 7 - Валидация банков
+            banks_list[selected_bank].credit_apps.append(
+                random.choice(credit_supply))  # записываем в потенциальные заявки рандомный кредит
+
+        # 6 - Прием потоков и назначение ставок - включить в процесс валидации
+        for bank in banks_list:
+            bank.validate()
+            bank.solve()
+            bank.restart()
+
+
+
     # 8 - Валидация системы
+
     # 9 - сохранение истории ликвидности системы и по банкам отдельно в файлы
     # 10 - отрисовка графиков
 
+
 run(n_steps=10)
 
-for _ in range(len(banks_list)):
-    print(len(banks_list[_].credit_apps))
+print(banks_list[1].__dict__)
+print('---------------------------------------------------------------------------------------------------------------')
+print(f'Кол-во заявок на депозиты: {len(banks_list[1].deposit_apps)}, кол-во депозитов: {len(banks_list[1].deposits)}')
+print(f'Кол-во заявок на кредиты: {len(banks_list[1].credit_apps)}, кол-во кредитов: {len(banks_list[1].credits)}')
+print(banks_list[1].cash_history)
